@@ -1,0 +1,216 @@
+---
+title: "Analiza stopniowego zmniejszania się długości śledzi oceanicznych wyławianych w Europie"
+author: "Paweł Osuch"
+student id: "129400"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Opis analizy
+
+Celem analizy jest próba odpowiedzi na pytanie: co przyczynia się do zmian w rozmiarze śledzia oceanicznego wyławianego w Europie. W ostatnich 60 latach zauważono stopniowe zmniejszania się długości śledzi. 
+Dzięki zbiorowi danych w których opisane są różne czynniki zarejestrowane w czasie połowów stwierdzono, że największy wpływ na długość śledzia ma miesiąc połowów oraz zagęszczenie planktonu Calanus finmarchicus. Istotnym czynnikiem, który wpływa na planlton jest też temperatura.
+
+# 2. Ustawienia środowiska R
+
+Biblioteki używane w analizie:
+```{r Libraries, echo=TRUE, warning=FALSE, message=FALSE}
+library(knitr)
+library(ggplot2)
+library(corrplot)
+library(plotly)
+library(reshape2)
+library(caret)
+```
+Powtarzalność wyników zapewnia ustawiony seed:
+```{r Seed, echo=TRUE, warning=FALSE}
+set.seed(42)
+```
+
+# 3. Przedstawienie danych wejściowych
+
+##Opis danych
+
+Źródłem danych dla projektu jest uporządkowany chronologicznie zbiór danych w postaci pliku csv.
+Są to pomiary z ostatnich 60 lat przedstawiające długość złowionych śledzi oraz warunki środowiska w jakich żyją zbierane podczas połowów komercyjnych. W ramach połowu jednej jednostki losowo wybierano od 50 do 100 sztuk trzyletnich śledzi.
+
+Atrybuty, jakie możemy znaleźć w danych wejściowych:
+
+* X: numer wiersza
+* length: długość złowionego śledzia [cm];
+* cfin1: dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 1];
+* cfin2: dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 2];
+* chel1: dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 1];
+* chel2: dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 2];
+* lcop1: dostępność planktonu [zagęszczenie widłonogów gat. 1];
+* lcop2: dostępność planktonu [zagęszczenie widłonogów gat. 2];
+* fbar: natężenie połowów w regionie [ułamek pozostawionego narybku];
+* recr: roczny narybek [liczba śledzi];
+* cumf: łączne roczne natężenie połowów w regionie [ułamek pozostawionego narybku];
+* totaln: łączna liczba ryb złowionych w ramach połowu [liczba śledzi];
+* sst: temperatura przy powierzchni wody [°C];
+* sal: poziom zasolenia wody [Knudsen ppt];
+* xmonth: miesiąc połowu [numer miesiąca];
+* nao: oscylacja północnoatlantycka [mb].
+
+Mamy 16 atrybutów z czego pierwszy jest numerem wiersza. Drugim atrybutem jest długość złowionego śledzia, którego zależność będziemy badać przy pomocy pozostałych atrybutów. Jeden wiersz zbioru danych traktujemy jako jedną obserwację.
+
+## Załadowanie danych:
+
+```{r LoadData, echo=TRUE, warning=FALSE, cache=TRUE}
+sledzie <- data.frame(read.csv("sledzie.csv", na.strings = "?"))
+```
+
+
+Poniżej przedstawiono pierwsze sześć wierszy danych wejściowych:
+
+```{r ShowSample, echo=TRUE, warning=FALSE}
+kable(head(sledzie))
+```
+
+Już na początku danych można zauważyć, że dane nie są kompletne i występują brakujące wartości. 
+Sprawdźmy jaka jest skala tego zjawiska na poszczególnych atrybutach:
+
+```{r CheckNA, echo=TRUE, warning=FALSE}
+na_count <- sapply(sledzie, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+na_count
+cat("Liczba wszystkich wierszy:", nrow(sledzie))
+```
+
+# 3. Wykonanie analizy
+##Obsługa brakujących wartości
+Brakujących wartości jest zbyt dużo, aby je po prostu usunąć. Taka operacja mogła by przekłamać wyniki, dlatego należy znaleźć inne rozwiązanie.
+Brakujące wartości zostaną zastąpione medianą z wszystkich wartości danego atrybutu. 
+
+```{r ReplaceNA, echo=TRUE, warning=FALSE}
+sledzie[] <- lapply(sledzie, function(x) { 
+  x[is.na(x)] <- median(x, na.rm = TRUE)
+  x
+})
+
+cat("Liczba wartości NA w zbiorze danych po wykonaniu operacji:", sum(colSums(is.na(sledzie))))
+
+```
+
+
+Po wyczyszczeniu danych specyfikacja atrybutów wygląda następująco:
+
+```{r SummaryAttrs, echo=TRUE, warning=FALSE}
+kable(summary(sledzie[1:8]))
+kable(summary(sledzie[9:16]))
+```
+
+Dla zwiększenia czytelności dalszej analizy dodajemy dodatkowy data frame z bardziej zrozumiałymi nazwami kolumn. Dzięki temu będzie można przemiennie korzystać z nazw skróconych i pełnych.
+
+```{r ChangeColNames, echo=TRUE, warning=FALSE}
+sledzie_with_names <- sledzie
+colnames(sledzie_with_names) <- c("numer wiersza",
+"długość złowionego śledzia [cm]",
+"dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 1]",
+"dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 2]",
+"dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 1]",
+"dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 2]",
+"dostępność planktonu [zagęszczenie widłonogów gat. 1]",
+"dostępność planktonu [zagęszczenie widłonogów gat. 2]",
+"natężenie połowów w regionie [ułamek pozostawionego narybku]",
+"roczny narybek [liczba śledzi]",
+"łączne roczne natężenie połowów w regionie [ułamek pozostawionego narybku]",
+"łączna liczba ryb złowionych w ramach połowu [liczba śledzi]",
+"temperatura przy powierzchni wody [°C]",
+"poziom zasolenia wody [Knudsen ppt]",
+"miesiąc połowu [numer miesiąca]",
+"oscylacja północnoatlantycka [mb]")
+```
+
+##Rozkład wartości atrybutów
+W tym momencie warto przedstawić rozkład wartości każdego z atrybutów:
+
+```{r AttrsDistrGraphs, echo=TRUE, warning=FALSE, message=FALSE}
+  sledzie_colnames <- c(colnames(sledzie_with_names[-1]))
+  for (i in sledzie_colnames){
+  print(ggplot(sledzie_with_names,aes(sledzie_with_names[i])) + geom_histogram(bins = 15, col="darkorange4", fill="darkorange") + xlab(i) + ylab("Liczba obserwacji") + theme_light())
+  }
+```
+
+##Zmiana rozmariu śledzi w czasie
+Sprawdźmy, jak zmieniał się rozmiar śledzi w czasie:
+
+```{r LengthGraph, echo=TRUE, warning=FALSE, message=FALSE}
+print(ggplot(sledzie, aes(x=X, y=length))+ geom_line() + xlab("Obserwacje") + ylab("Długość złowionego śledzia [cm]") + theme_light())
+ggplotly( ggplot(sledzie, aes(x=X, y=length))+ geom_smooth() + xlab("Obserwacje") + ylab("Długość złowionego śledzia [cm]") + theme_light())
+```
+
+##Korelacje między atrybutami
+
+Dzięki macierzy korelacji możemy sprawdzić, które atrybuty są do siebie podobne.
+```{r Correlation, echo=TRUE, warning=FALSE}
+corrplot(cor(sledzie[-1]), method="number")
+```
+
+Dzięki macierzy korelacji widzimy, że niektóre atrybuty są ze sobą silnie skorelowane.
+Przyjmijmy, że korelacja powyżej 0.8 jest wyznacznikiem usunięcia jednego z atrybutów ze zbioru danych. Będzie to miało znaczenie w dlaszych operacjach związanych z regresją.
+
+Atrybutami silnie skorelowanymi są:
+
+
+* [lcop1-chel1]
+* [lcop2-chel2]
+* [cumf-fbar]
+
+Usuwamy lcop1, chel2 i cumf:
+
+```{r DeleteAttrs, echo=TRUE, warning=FALSE}
+sledzie <- sledzie[c(-6,-7,-10)]
+sledzie_with_names <- sledzie_with_names[c(-6,-7,-10)]
+```
+
+##Regresja
+Na potrzeby regresora przewidującej rozmiar śledzia zbiór danych podzielono na zbiór treningowy oraz zbiór testowy w proporcji 30%-70%.
+
+```{r SplitData, echo=TRUE, warning=FALSE}
+sledzie <- sledzie[-1]
+sledzie_regress <- createDataPartition(y = sledzie$length, p = 0.70, list = FALSE)
+sledzie_train <- sledzie[sledzie_regress,]
+sledzie_test <-  sledzie[-sledzie_regress,]
+```
+
+Uczenie metodą random forest.
+
+```{r TrainingControl , echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+control <- trainControl( method = "repeatedcv",number = 3, repeats = 6)
+trn <- train(length~.,
+              data = sledzie_train,
+              method = "rf",
+              trControl = control,
+              importance =TRUE,
+              ntree = 10)
+
+```
+
+Jakość predykcji:
+```{r Model , echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+trn
+```
+
+##Analiza ważności atrybutów
+Poniższy diagram prezentuje ważność poszczególnych atrybutów. 
+```{r RateGraph , echo=TRUE, warning=FALSE, message=FALSE, cache=TRUE}
+plot(varImp(trn))
+```
+
+
+
+
+
+
+
+
+
